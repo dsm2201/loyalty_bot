@@ -282,10 +282,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Админские кнопки
     if data == "admin_purchase":
-        context.user_data["admin_step"] = "await_purchase_sum"
+        # просим ещё раз номер телефона именно для покупки
+        context.user_data["admin_step"] = "await_phone_for_purchase"
         await query.edit_message_text(
-            "💰 Введите сумму покупки (в рублях):\n"
-            "Например: 450 или 450.50"
+            "Введите номер телефона клиента для *покупки* (в любом удобном формате):",
+            parse_mode="Markdown"
         )
         return
 
@@ -326,16 +327,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("admin_mode"):
         step = context.user_data.get("admin_step")
 
-        # 2.1. Получаем телефон клиента
-        if step == "await_phone":
+        # 2.1.b Телефон для покупки (после нажатия кнопки)
+        if step == "await_phone_for_purchase":
             phone = text.strip()
-            context.user_data["admin_client_phone"] = phone  # ВАЖНО: сохраняем телефон
+            context.user_data["admin_client_phone"] = phone
             init_gs()
             client = find_client_by_phone(phone)
             if not client:
                 client = upsert_client(phone, "")
 
-            # актуализируем уровень
             turnover = float(client.get("turnover", 0) or 0)
             level, _ = calc_level_and_rate(turnover)
             if client.get("level") != level:
@@ -345,22 +345,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bonus = float(client.get("bonus_balance", 0) or 0)
             name = client.get("name", "") or "Клиент"
 
-            keyboard = [
-                [InlineKeyboardButton("➕ Покупка", callback_data="admin_purchase")],
-                [InlineKeyboardButton("➖ Списать бонусы", callback_data="admin_redeem")],
-            ]
-
             await update.message.reply_text(
-                f"Профиль клиента:\n\n"
+                f"Покупка для клиента:\n\n"
                 f"Имя: {name}\n"
                 f"Телефон: {phone}\n"
                 f"Уровень: {level}\n"
                 f"Оборот: {turnover:.0f}₽\n"
                 f"Бонусы: {bonus:.0f}\n\n"
-                "Выберите действие:",
-                reply_markup=InlineKeyboardMarkup(keyboard),
+                "Теперь введи сумму покупки (в рублях):"
             )
-            context.user_data["admin_step"] = "menu"
+            context.user_data["admin_step"] = "await_purchase_sum"
             return
 
         # 2.2. Ввод суммы покупки
