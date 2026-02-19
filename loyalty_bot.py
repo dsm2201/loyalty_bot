@@ -1,42 +1,87 @@
 import os
-from datetime import datetime
 import json
+from datetime import datetime
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    ContextTypes, MessageHandler, filters,
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
 )
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
 import gspread
 from gspread.auth import service_account_from_dict
 
+
+# === ENV НАСТРОЙКИ ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 
 GSSERVICEJSON = os.getenv("GSSERVICEJSON")  # JSON ключ сервис-аккаунта
-GSSHEETID = os.getenv("GSSHEETID")          # ID таблицы
+GSSHEETID = os.getenv("GSSHEETID")          # ID таблицы в Google Sheets
+
+# Ожидаемые листы:
+# Sheet "clients": phone | name | created_at | turnover | bonus_balance | level
+# Sheet "transactions": phone | type | amount | bonus_delta | ts | comment
 
 GSCLIENT = None
 GS_SHEET = None
 CLIENTS_WS = None
 TX_WS = None
 
+
+# === GOOGLE SHEETS ===
+
 def init_gs():
+    """Инициализация Google Sheets (вызывать перед операциями)."""
     global GSCLIENT, GS_SHEET, CLIENTS_WS, TX_WS
-    if not GSSERVICEJSON or not GSSHEETID:
-        print("No GS creds in env")
+    if GSCLIENT is not None:
         return
+
+    if not GSSERVICEJSON or not GSSHEETID:
+        print("No GS creds in env (GSSERVICEJSON/GSSHEETID)")
+        return
+
     info = json.loads(GSSERVICEJSON)
     client = service_account_from_dict(info)
     sheet = client.open_by_key(GSSHEETID)
 
-    CLIENTS_WS = sheet.worksheet("clients")
-    TX_WS = sheet.worksheet("transactions")
+    try:
+        clients_ws = sheet.worksheet("clients")
+    except gspread.exceptions.WorksheetNotFound:
+        clients_ws = sheet.add_worksheet("clients", rows=1000, cols=10)
+        clients_ws.append_row(
+            ["phone", "name", "created_at", "turnover", "bonus_balance", "level"],
+            value_input_option="RAW",
+        )
+
+    try:
+        tx_ws = sheet.worksheet("transactions")
+    except gspread.exceptions.WorksheetNotFound:
+        tx_ws = sheet.add_worksheet("transactions", rows=2000, cols=10)
+        tx_ws.append_row(
+            ["phone", "type", "amount", "bonus_delta", "ts", "comment"],
+            value_input_option="RAW",
+        )
 
     GSCLIENT = client
     GS_SHEET = sheet
-    print("Google Sheets inited")
+    global CLIENTS_WS, TX_WS
+    CLIENTS_WS = clients_ws
+    TX_WS = tx_ws
+
+    print("Google Sheets initialized")
+
+
 def find_client_by_phone(phone: str):
+    """Поиск клиента в листе clients по телефону."""
     if CLIENTS_WS is None:
         return None
     records = CLIENTS_WS.get_all_records()
@@ -45,218 +90,374 @@ def find_client_by_phone(phone: str):
             return r
     return None
 
-def create_or_update_client(phone: str, name: str):
+
+def upsert_client(phone: str, name: str | None = None):
+    """Создать или обновить клиента (имя можно обновлять)."""
     if CLIENTS_WS is None:
-        return
+        return None
+
     records = CLIENTS_WS.get_all_records()
     row_idx = None
-    for idx, r in enumerate(records, start=2):  # row 1 = header
+    for idx, r in enumerate(records, start=2):  # 1 строка — заголовок
         if str(r.get("phone", "")).strip() == phone.strip():
             row_idx = idx
             break
+
     now = datetime.utcnow().isoformat(timespec="seconds")
+
     if row_idx is None:
-        CLIENTS_WS.append_row([phone, name, now, 0, 0, "base"], value_input_option="RAW")
+        # новый клиент
+        row = [
+            phone,
+            name or "",
+            now,
+            0,          # turnover
+            0,          # bonus_balance
+            "base",     # level
+        ]
+        CLIENTS_WS.append_row(row, value_input_option="RAW")
+        return {
+            "phone": phone,
+            "name": name or "",
+            "created_at": now,
+            "turnover": 0,
+            "bonus_balance": 0,
+            "level": "base",
+        }
     else:
-        # Обновим имя, если поменялось
-        CLIENTS_WS.update_cell(row_idx, 2, name)
+        # обновляем имя, если есть
+        existing = records[row_idx - 2]
+        new_name = name or existing.get("name", "")
+        # обновление только имени (чтобы не трогать оборот/бонусы)
+        CLIENTS_WS.update_cell(row_idx, 2, new_name)
+        existing["name"] = new_name
+        return existing
+
+
+def update_client_row(client_dict):
+    """Полностью обновить строку клиента по phone."""
+    if CLIENTS_WS is None:
+        return
+    phone = str(client_dict.get("phone", "")).strip()
+    if not phone:
+        return
+    records = CLIENTS_WS.get_all_records()
+    for idx, r in enumerate(records, start=2):
+        if str(r.get("phone", "")).strip() == phone:
+            CLIENTS_WS.update_row(
+                idx,
+                [
+                    phone,
+                    client_dict.get("name", ""),
+                    client_dict.get("created_at", ""),
+                    client_dict.get("turnover", 0),
+                    client_dict.get("bonus_balance", 0),
+                    client_dict.get("level", "base"),
+                ],
+            )
+            return
+
 
 def log_transaction(phone: str, tx_type: str, amount: float, bonus_delta: float, comment: str = ""):
+    """Запись транзакции в лист transactions."""
     if TX_WS is None:
         return
     ts = datetime.utcnow().isoformat(timespec="seconds")
     TX_WS.append_row(
         [phone, tx_type, amount, bonus_delta, ts, comment],
-        value_input_option="RAW"
+        value_input_option="RAW",
     )
+
+
+# === ЛОГИКА УРОВНЕЙ И БОНУСОВ ===
+
+def calc_level_and_rate(turnover: float) -> tuple[str, float]:
+    """Возвращает (уровень, процент_начисления_бонусов)."""
+    if turnover >= 30000:
+        return "gold", 0.10
+    elif turnover >= 10000:
+        return "silver", 0.07
+    else:
+        return "base", 0.05
+
+
+def describe_level(level: str) -> str:
+    """Описание уровня для клиента (мотивационный текст)."""
+    if level == "gold":
+        return (
+            "Ваш уровень: ЗОЛОТО ✨\n"
+            "Вы — VIP гость нашего фото-ателье: 10% от каждой покупки возвращаются к вам в виде бонусов.\n"
+            "Чем чаще вы к нам заходите, тем выгоднее каждая новая услуга."
+        )
+    elif level == "silver":
+        return (
+            "Ваш уровень: СЕРЕБРО ⭐️\n"
+            "Вы уже в числе наших любимых клиентов: 7% от каждой покупки возвращаются на бонусный счёт.\n"
+            "Сделайте ещё несколько заказов — и вырастете до Золота."
+        )
+    else:
+        return (
+            "Ваш уровень: БАЗОВЫЙ 💎\n"
+            "С каждого заказа вы получаете 5% в виде бонусов.\n"
+            "Накопленные бонусы можно тратить на следующие услуги — приятно возвращаться, когда каждый визит окупается."
+
+
+def format_client_cabinet(client, phone: str) -> str:
+    """Текст личного кабинета для клиента."""
+    name = client.get("name") or "Клиент"
+    level = client.get("level", "base")
+    turnover = float(client.get("turnover", 0) or 0)
+    bonus = float(client.get("bonus_balance", 0) or 0)
+
+    lvl_text = describe_level(level)
+
+    text = (
+        f"{name}, добро пожаловать в ваш личный кабинет программы лояльности 📸\n\n"
+        f"Телефон: {phone}\n"
+        f"Накопленный оборот: {turnover:.0f}₽\n"
+        f"Бонусный счёт: {bonus:.0f} бонусов\n\n"
+        f"{lvl_text}\n\n"
+        "Каждая печать фото, ксерокс, скан или услуга в ателье — это ещё один шаг к новым бонусам.\n"
+        "Вы можете копить их и списывать частично за услуги — ощущение, что фото «достаются почти бесплатно», очень радует мозг 😉"
+    )
+    return text
+
+
+# === HANDLERS ===
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Приветствие клиента."""
     user = update.effective_user
+
     keyboard = [
-        [InlineKeyboardButton("🔐 Личный кабинет", callback_data="cabinet_open")]
+        [InlineKeyboardButton("🔐 Открыть личный кабинет", callback_data="cabinet_open")]
     ]
-    await update.message.reply_text(
-        "Привет! Это бот системы лояльности фото-ателье.\n"
-        "Нажми кнопку, чтобы открыть личный кабинет.",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+
+    text = (
+        "Привет! Я бот программы лояльности фото-ателье.\n\n"
+        "Каждый ваш визит — это не только красивые снимки и распечатки, "
+        "но и бонусы, которые возвращаются к вам.\n\n"
+        "Нажмите кнопку ниже, чтобы открыть свой личный кабинет и посмотреть, "
+        "какой уровень и сколько бонусов вы уже накопили."
     )
 
+    if update.message:
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await update.callback_query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Вход в админ-режим по /admin."""
+    user = update.effective_user
+    if user.id not in ADMIN_IDS:
+        await update.message.reply_text("⛔️ Доступ запрещён.")
+        return
+
+    context.user_data["admin_mode"] = True
+    context.user_data["admin_step"] = "await_phone"
+    await update.message.reply_text(
+        "🔑 Админ-режим.\n"
+        "Отправьте номер телефона клиента (в любом удобном формате)."
+    )
+
+
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка нажатий на Inline-кнопки."""
     query = update.callback_query
     await query.answer()
     data = query.data
 
+    # Личный кабинет клиента
     if data == "cabinet_open":
-        await query.edit_message_text("Введите ваш номер телефона в формате +79XXXXXXXXX")
         context.user_data["awaiting_phone_for_cabinet"] = True
+        await query.edit_message_text(
+            "Введите ваш номер телефона в формате +79XXXXXXXXX\n\n"
+            "Мы найдём ваш профиль в системе лояльности или создадим новый, "
+            "чтобы вы могли наслаждаться накоплением бонусов."
+        )
+        return
 
+    # Админские кнопки
     if data == "admin_purchase":
         context.user_data["admin_step"] = "await_purchase_sum"
-        await query.edit_message_text("Введи сумму покупки (в рублях):")
+        await query.edit_message_text(
+            "💰 Введите сумму покупки (в рублях):\n"
+            "Например: 450 или 450.50"
+        )
         return
 
     if data == "admin_redeem":
         context.user_data["admin_step"] = "await_redeem_sum"
-        await query.edit_message_text("Введи, сколько бонусов списать:")
+        await query.edit_message_text(
+            "🎁 Введите, сколько бонусов списать у клиента:"
+        )
         return
 
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
+    """Обработка текстовых сообщений (телефон, суммы и т.д.)."""
+    text = (update.message.text or "").strip()
     user = update.effective_user
 
-    # Клиент вводит телефон
+    # 1) Клиент вводит телефон для личного кабинета
     if context.user_data.get("awaiting_phone_for_cabinet"):
         context.user_data["awaiting_phone_for_cabinet"] = False
         phone = text
         init_gs()
         client = find_client_by_phone(phone)
         if not client:
-            create_or_update_client(phone, user.full_name or "")
-            client = find_client_by_phone(phone)
+            client = upsert_client(phone, user.full_name or "")
 
-        level = client.get("level", "base")
-        bonus = client.get("bonus_balance", 0)
-        await update.message.reply_text(
-            f"Ваш телефон: {phone}\n"
-            f"Уровень: {level}\n"
-            f"Бонусы: {bonus}"
-        )
+        # актуализируем уровень/процент, если что-то поменялось
+        turnover = float(client.get("turnover", 0) or 0)
+        level, _ = calc_level_and_rate(turnover)
+        if client.get("level") != level:
+            client["level"] = level
+            update_client_row(client)
+
+        cabinet_text = format_client_cabinet(client, phone)
+        await update.message.reply_text(cabinet_text)
         return
-    # Админский сценарий
+
+    # 2) Админский сценарий
     if context.user_data.get("admin_mode"):
         step = context.user_data.get("admin_step")
 
+        # 2.1. Получаем телефон клиента
         if step == "await_phone":
             phone = text
+            context.user_data["admin_client_phone"] = phone
             init_gs()
             client = find_client_by_phone(phone)
             if not client:
-                create_or_update_client(phone, "")
-                client = find_client_by_phone(phone)
+                client = upsert_client(phone, "")
 
-            context.user_data["admin_client_phone"] = phone
-            bonus = client.get("bonus_balance", 0)
-            level = client.get("level", "base")
-            turnover = client.get("turnover", 0)
+            # актуализируем уровень
+            turnover = float(client.get("turnover", 0) or 0)
+            level, _ = calc_level_and_rate(turnover)
+            if client.get("level") != level:
+                client["level"] = level
+                update_client_row(client)
+
+            bonus = float(client.get("bonus_balance", 0) or 0)
+            name = client.get("name", "") or "Клиент"
 
             keyboard = [
                 [InlineKeyboardButton("➕ Покупка", callback_data="admin_purchase")],
-                [InlineKeyboardButton("➖ Списать бонусы", callback_data="admin_redeem")]
+                [InlineKeyboardButton("➖ Списать бонусы", callback_data="admin_redeem")],
             ]
+
             await update.message.reply_text(
-                f"Клиент: {phone}\n"
+                f"Профиль клиента:\n\n"
+                f"Имя: {name}\n"
+                f"Телефон: {phone}\n"
                 f"Уровень: {level}\n"
-                f"Оборот: {turnover}\n"
-                f"Бонусы: {bonus}",
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                f"Оборот: {turnover:.0f}₽\n"
+                f"Бонусы: {bonus:.0f}\n\n"
+                "Выберите действие:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
             )
             context.user_data["admin_step"] = "menu"
             return
+
+        # 2.2. Ввод суммы покупки
         if step == "await_purchase_sum":
             phone = context.user_data.get("admin_client_phone")
             try:
                 amount = float(text.replace(",", "."))
             except ValueError:
-                await update.message.reply_text("Неверная сумма, попробуй ещё раз.")
+                await update.message.reply_text("⚠️ Неверный формат суммы. Попробуй ещё раз.")
                 return
+
             init_gs()
             client = find_client_by_phone(phone)
             if not client:
-                await update.message.reply_text("Клиент не найден.")
+                await update.message.reply_text("Клиент не найден (возможно, ошибка номера).")
+                context.user_data["admin_step"] = "await_phone"
                 return
 
-            # Простая логика начисления: 5% от суммы
-            bonus_delta = round(amount * 0.05)
-            # обновляем оборот и бонусы
-            turnover = float(client.get("turnover", 0) or 0) + amount
-            bonus_balance = float(client.get("bonus_balance", 0) or 0) + bonus_delta
+            turnover = float(client.get("turnover", 0) or 0)
+            bonus_balance = float(client.get("bonus_balance", 0) or 0)
 
-            # найдём строку и обновим
-            records = CLIENTS_WS.get_all_records()
-            for idx, r in enumerate(records, start=2):
-                if str(r.get("phone", "")).strip() == phone:
-                    CLIENTS_WS.update_row(idx, [
-                        phone,
-                        r.get("name", ""),
-                        r.get("created_at", ""),
-                        turnover,
-                        bonus_balance,
-                        r.get("level", "base"),
-                    ])
-                    break
+            new_turnover = turnover + amount
+            level, rate = calc_level_and_rate(new_turnover)
+            bonus_delta = round(amount * rate)
+            new_bonus_balance = bonus_balance + bonus_delta
+
+            client["turnover"] = new_turnover
+            client["bonus_balance"] = new_bonus_balance
+            client["level"] = level
+            update_client_row(client)
 
             log_transaction(phone, "purchase", amount, bonus_delta, "Покупка в ателье")
+
             await update.message.reply_text(
-                f"Покупка на {amount}₽.\n"
-                f"Начислено бонусов: {bonus_delta}.\n"
-                f"Новый баланс: {bonus_balance}."
+                f"✅ Покупка на {amount:.0f}₽ успешно добавлена.\n"
+                f"Начислено бонусов: {bonus_delta:.0f}.\n"
+                f"Новый баланс бонусов: {new_bonus_balance:.0f}.\n"
+                f"Текущий уровень клиента: {level}."
             )
+
             context.user_data["admin_step"] = "menu"
             return
 
+        # 2.3. Ввод суммы списания бонусов
         if step == "await_redeem_sum":
             phone = context.user_data.get("admin_client_phone")
             try:
                 redeem = float(text.replace(",", "."))
             except ValueError:
-                await update.message.reply_text("Неверное число, попробуй ещё раз.")
+                await update.message.reply_text("⚠️ Неверное число. Попробуй ещё раз.")
                 return
+
             init_gs()
             client = find_client_by_phone(phone)
             if not client:
-                await update.message.reply_text("Клиент не найден.")
+                await update.message.reply_text("Клиент не найден (возможно, ошибка номера).")
+                context.user_data["admin_step"] = "await_phone"
                 return
 
             bonus_balance = float(client.get("bonus_balance", 0) or 0)
             if redeem > bonus_balance:
                 await update.message.reply_text(
-                    f"Недостаточно бонусов. Текущий баланс: {bonus_balance}."
+                    f"Недостаточно бонусов для списания.\n"
+                    f"Текущий баланс: {bonus_balance:.0f}."
                 )
                 return
 
             new_balance = bonus_balance - redeem
-
-            records = CLIENTS_WS.get_all_records()
-            for idx, r in enumerate(records, start=2):
-                if str(r.get("phone", "")).strip() == phone:
-                    CLIENTS_WS.update_row(idx, [
-                        phone,
-                        r.get("name", ""),
-                        r.get("created_at", ""),
-                        r.get("turnover", 0),
-                        new_balance,
-                        r.get("level", "base"),
-                    ])
-                    break
+            client["bonus_balance"] = new_balance
+            update_client_row(client)
 
             log_transaction(phone, "redeem", 0, -redeem, "Списание бонусов")
+
             await update.message.reply_text(
-                f"Списано бонусов: {redeem}.\n"
-                f"Новый баланс: {new_balance}."
+                f"🎁 Списано бонусов: {redeem:.0f}.\n"
+                f"Новый баланс бонусов: {new_balance:.0f}."
             )
+
             context.user_data["admin_step"] = "menu"
             return
 
-
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user.id not in ADMIN_IDS:
-        await update.message.reply_text("Нет доступа.")
-        return
+    # Если текст не попал ни в один сценарий
     await update.message.reply_text(
-        "Админ-режим.\n"
-        "Отправь номер телефона клиента, которого хочешь найти/создать."
+        "Сообщение не распознано.\n\n"
+        "Клиент: используйте /start, чтобы открыть личный кабинет.\n"
+        "Админ: используйте /admin для работы с клиентами."
     )
-    context.user_data["admin_mode"] = True
-    context.user_data["admin_step"] = "await_phone"
+
+
+# === MAIN ===
 
 def main():
     if not BOT_TOKEN:
-        raise RuntimeError("No BOT_TOKEN in env")
+        raise RuntimeError("BOT_TOKEN is not set in environment")
 
     init_gs()
 
     app = Application.builder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin))
     app.add_handler(CallbackQueryHandler(button))
@@ -265,6 +466,6 @@ def main():
     print("Starting loyalty bot...")
     app.run_polling()
 
+
 if __name__ == "__main__":
     main()
-
