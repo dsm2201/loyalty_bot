@@ -38,13 +38,14 @@ GSCLIENT = None
 GS_SHEET = None
 CLIENTS_WS = None
 TX_WS = None
+TG_LINKS_WS = None  # лист для связок user_id <-> phone
 
 
 # === GOOGLE SHEETS ===
 
 def init_gs():
     """Инициализация Google Sheets (вызывать перед операциями)."""
-    global GSCLIENT, GS_SHEET, CLIENTS_WS, TX_WS
+    global GSCLIENT, GS_SHEET, CLIENTS_WS, TX_WS, TG_LINKS_WS
     if GSCLIENT is not None:
         return
 
@@ -56,6 +57,11 @@ def init_gs():
     client = service_account_from_dict(info)
     sheet = client.open_by_key(GSSHEETID)
 
+    try:
+        tg_links_ws = sheet.worksheet("tg_links")
+    except Exception:
+        tg_links_ws = None
+        
     try:
         clients_ws = sheet.worksheet("clients")
     except gspread.exceptions.WorksheetNotFound:
@@ -76,9 +82,9 @@ def init_gs():
 
     GSCLIENT = client
     GS_SHEET = sheet
-    global CLIENTS_WS, TX_WS
     CLIENTS_WS = clients_ws
     TX_WS = tx_ws
+    TG_LINKS_WS = tg_links_ws
 
     print("Google Sheets initialized")
 
@@ -92,6 +98,51 @@ def find_client_by_phone(phone: str):
         if str(r.get("phone", "")).strip() == phone.strip():
             return r
     return None
+
+def get_phone_by_user_id(user_id: int) -> str | None:
+    """Возвращает телефон, привязанный к Telegram user_id, из листа tg_links."""
+    if TG_LINKS_WS is None:
+        return None
+    try:
+        records = TG_LINKS_WS.get_all_records()
+        for r in records:
+            uid = str(r.get("user_id", "")).strip()
+            if uid == str(user_id):
+                phone = str(r.get("phone", "")).strip()
+                return phone or None
+    except Exception as e:
+        print(f"get_phone_by_user_id error: {e}")
+    return None
+
+
+def link_user_to_phone(user, phone: str):
+    """Создаёт или обновляет связь user_id <-> phone в листе tg_links."""
+    if TG_LINKS_WS is None:
+        return
+    try:
+        records = TG_LINKS_WS.get_all_records()
+        user_id_str = str(user.id)
+        row_index = None
+        for idx, r in enumerate(records, start=2):
+            if str(r.get("user_id", "")).strip() == user_id_str:
+                row_index = idx
+                break
+
+        now = datetime.utcnow().isoformat(timespec="seconds")
+        row_values = [
+            user_id_str,
+            user.username or "",
+            user.first_name or "",
+            phone,
+            now,
+        ]
+
+        if row_index is None:
+            TG_LINKS_WS.append_row(row_values, value_input_option="RAW")
+        else:
+            TG_LINKS_WS.update(f"A{row_index}:E{row_index}", [row_values])
+    except Exception as e:
+        print(f"link_user_to_phone error: {e}")
 
 
 def upsert_client(phone: str, name: str | None = None):
@@ -261,19 +312,42 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["admin_mode"] = True
     context.user_data["admin_step"] = "await_phone"
 
-
+TG_LINKS_WS = None  # уже есть глобально
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка нажатий на Inline-кнопки."""
     query = update.callback_query
     await query.answer()
     data = query.data
+    user = update.effective_user
 
     # Личный кабинет клиента
     if data == "cabinet_open":
+        init_gs()
+
+        # 1) Пробуем найти телефон по user_id
+        linked_phone = get_phone_by_user_id(user.id)
+
+        if linked_phone:
+            client = find_client_by_phone(linked_phone)
+            if not client:
+                client = upsert_client(linked_phone, user.full_name or "")
+
+            turnover = float(client.get("turnover", 0) or 0)
+            level, _ = calc_level_and_rate(turnover)
+            if client.get("level") != level:
+                client["level"] = level
+                update_client_row(client)
+
+            context.user_data["client_phone"] = linked_phone
+            cabinet_text = format_client_cabinet(client, linked_phone)
+            await query.edit_message_text(cabinet_text)
+            return
+
+        # 2) Если привязки нет — просим телефон
         context.user_data["awaiting_phone_for_cabinet"] = True
         await query.edit_message_text(
-            "Введите ваш номер телефона в формате +79XXXXXXXXX\n\n"
+            "Введите ваш номер телефона в формате 89XXXXXXXXX\n\n"
             "Мы найдём ваш профиль в системе лояльности или создадим новый, "
             "чтобы вы могли наслаждаться накоплением бонусов."
         )
@@ -296,7 +370,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 1) Клиент вводит телефон для личного кабинета
     if context.user_data.get("awaiting_phone_for_cabinet"):
         context.user_data["awaiting_phone_for_cabinet"] = False
-        phone = text
+        phone = text  # сюда можно потом добавить нормализацию
+
         init_gs()
         client = find_client_by_phone(phone)
         if not client:
@@ -308,6 +383,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if client.get("level") != level:
             client["level"] = level
             update_client_row(client)
+
+        # ПРИВЯЗЫВАЕМ user_id ↔ phone
+        link_user_to_phone(user, phone)
+        context.user_data["client_phone"] = phone
 
         cabinet_text = format_client_cabinet(client, phone)
         await update.message.reply_text(cabinet_text)
