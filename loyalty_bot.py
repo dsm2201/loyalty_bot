@@ -281,21 +281,12 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Админские кнопки
     if data == "admin_purchase":
-        # просим ещё раз номер телефона именно для покупки
-        context.user_data["admin_step"] = "await_phone_for_purchase"
+        context.user_data["admin_step"] = "await_purchase_sum"
         await query.edit_message_text(
-            "Введите номер телефона клиента для *покупки* (в любом удобном формате):",
-            parse_mode="Markdown"
+            "💰 Введите сумму покупки (в рублях):\n"
+            "Например: 450 или 450.50"
         )
         return
-
-    if data == "admin_redeem":
-        context.user_data["admin_step"] = "await_redeem_sum"
-        await query.edit_message_text(
-            "🎁 Введите, сколько бонусов списать у клиента:"
-        )
-        return
-
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений (телефон, суммы и т.д.)."""
