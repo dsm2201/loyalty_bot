@@ -136,7 +136,6 @@ def upsert_client(phone: str, name: str | None = None):
         existing["name"] = new_name
         return existing
 
-
 def update_client_row(client_dict):
     """Полностью обновить строку клиента по phone."""
     if CLIENTS_WS is None:
@@ -145,21 +144,21 @@ def update_client_row(client_dict):
     if not phone:
         return
     records = CLIENTS_WS.get_all_records()
-    for idx, r in enumerate(records, start=2):
+    for idx, r in enumerate(records, start=2):  # строка в Sheets = idx
         if str(r.get("phone", "")).strip() == phone:
-            CLIENTS_WS.update_row(
-                idx,
-                [
+            # обновляем диапазон A:F в найденной строке
+            CLIENTS_WS.update(
+                f"A{idx}:F{idx}",
+                [[
                     phone,
                     client_dict.get("name", ""),
                     client_dict.get("created_at", ""),
                     client_dict.get("turnover", 0),
                     client_dict.get("bonus_balance", 0),
                     client_dict.get("level", "base"),
-                ],
+                ]],
             )
             return
-
 
 def log_transaction(phone: str, tx_type: str, amount: float, bonus_delta: float, comment: str = ""):
     """Запись транзакции в лист transactions."""
