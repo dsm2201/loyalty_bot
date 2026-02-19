@@ -27,6 +27,9 @@ ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 GSSERVICEJSON = os.getenv("GSSERVICEJSON")  # JSON ключ сервис-аккаунта
 GSSHEETID = os.getenv("GSSHEETID")          # ID таблицы в Google Sheets
 
+PORT = int(os.getenv("PORT", "10000"))
+BASE_URL = os.getenv("BASE_URL")
+
 # Ожидаемые листы:
 # Sheet "clients": phone | name | created_at | turnover | bonus_balance | level
 # Sheet "transactions": phone | type | amount | bonus_delta | ts | comment
@@ -454,17 +457,31 @@ def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is not set in environment")
 
+    if not BASE_URL:
+        raise RuntimeError("BASE_URL is not set in environment")
+
     init_gs()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin))
-    app.add_handler(CallbackQueryHandler(button))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("admin", admin))
+    application.add_handler(CallbackQueryHandler(button))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("Starting loyalty bot...")
-    app.run_polling()
+    # URL, по которому Telegram будет стучаться
+    webhook_path = BOT_TOKEN  # можно любое, но токен — удобно
+    webhook_url = f"{BASE_URL}/{webhook_path}"
+
+    print("Starting loyalty bot with webhook...")
+    print(f"Listening on 0.0.0.0:{PORT}, webhook URL = {webhook_url}")
+
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=webhook_path,
+        webhook_url=webhook_url,
+    )
 
 
 if __name__ == "__main__":
