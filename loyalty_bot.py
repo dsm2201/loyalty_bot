@@ -329,8 +329,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # 2.1. Получаем телефон клиента
         if step == "await_phone":
-            phone = text
-            context.user_data["admin_client_phone"] = phone
+            phone = text.strip()
+            context.user_data["admin_client_phone"] = phone  # ВАЖНО: сохраняем телефон
             init_gs()
             client = find_client_by_phone(phone)
             if not client:
@@ -367,6 +367,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 2.2. Ввод суммы покупки
         if step == "await_purchase_sum":
             phone = context.user_data.get("admin_client_phone")
+            if not phone:
+                await update.message.reply_text(
+                    "❗ Телефон клиента не найден в сессии. Отправь /admin и введи телефон заново."
+                )
+                context.user_data["admin_step"] = "await_phone"
+                return
+
             try:
                 amount = float(text.replace(",", "."))
             except ValueError:
@@ -408,6 +415,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 2.3. Ввод суммы списания бонусов
         if step == "await_redeem_sum":
             phone = context.user_data.get("admin_client_phone")
+            if not phone:
+                await update.message.reply_text(
+                    "❗ Телефон клиента не найден в сессии. Отправь /admin и введи телефон заново."
+                )
+                context.user_data["admin_step"] = "await_phone"
+                return
+
             try:
                 redeem = float(text.replace(",", "."))
             except ValueError:
