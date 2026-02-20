@@ -167,7 +167,7 @@ def upsert_client(phone: str, name: str | None = None):
             now,
             0,          # turnover
             0,          # bonus_balance
-            "base",     # level
+            "silver",     # level
         ]
         CLIENTS_WS.append_row(row, value_input_option="RAW")
         return {
@@ -176,7 +176,7 @@ def upsert_client(phone: str, name: str | None = None):
             "created_at": now,
             "turnover": 0,
             "bonus_balance": 0,
-            "level": "base",
+            "level": "silver",
         }
     else:
         # обновляем имя, если есть
@@ -206,7 +206,7 @@ def update_client_row(client_dict):
                     client_dict.get("created_at", ""),
                     client_dict.get("turnover", 0),
                     client_dict.get("bonus_balance", 0),
-                    client_dict.get("level", "base"),
+                    client_dict.get("level", "silver"),
                 ]],
             )
             return
@@ -227,21 +227,21 @@ def log_transaction(phone: str, tx_type: str, amount: float, bonus_delta: float,
 def calc_level_and_rate(turnover: float) -> tuple[str, float]:
     """Возвращает (уровень, процент_начисления_бонусов)."""
     if turnover >= 30000:
-        return "gold", 0.10
+        return "platinum", 0.10
     elif turnover >= 10000:
-        return "silver", 0.07
+        return "gold", 0.07
     else:
-        return "base", 0.05
+        return "silver", 0.05
 
 def describe_level(level: str) -> str:
     """Описание уровня для клиента (мотивационный текст)."""
-    if level == "gold":
+    if level == "platinum":
         return (
-            "Ваш уровень: Платина ✨\n"
+            "Ваш уровень: Платинум ✨\n"
             "Вы — VIP гость нашего фото-ателье: 10% от каждой покупки возвращаются к Вам в виде бонусов.\n"
             "Бонусами можно оплатить до 30% суммы следующей покупки."
         )
-    elif level == "silver":
+    elif level == "gold":
         return (
             "Ваш уровень: Золото ⭐️\n"
             "Вы уже в числе наших любимых клиентов: 7% от каждой покупки возвращаются на бонусный счёт.\n"
@@ -258,21 +258,21 @@ def describe_level(level: str) -> str:
 def format_client_cabinet(client, phone: str) -> str:
     """Текст личного кабинета для клиента."""
     name = client.get("name") or "Клиент"
-    level = client.get("level", "base")
+    level = client.get("level", "silver")
     turnover = float(client.get("turnover", 0) or 0)
     bonus = float(client.get("bonus_balance", 0) or 0)
 
     lvl_text = describe_level(level)
 
     # сколько до следующего уровня
-    if level == "gold":
-        next_level_line = "Вы уже на максимальном уровне программы лояльности - ПЛАТИНА."
-    elif level == "silver":
+    if level == "platinum":
+        next_level_line = "Вы уже на максимальном уровне программы лояльности - ПЛАТИНУМ."
+    elif level == "gold":
         need = max(0, 30000 - turnover)
-        next_level_line = f"Следующий уровень — ПЛАТИНА (осталось потратить {need:.0f} рублей)."
-    else:  # base
+        next_level_line = f"Следующий уровень — ПЛАТИНУМ (осталось потратить {need:.0f} рублей)."
+    else:  # silver
         need = max(0, 10000 - turnover)
-        next_level_line = f"Следующий уровень — СЕРЕБРО (осталось потратить {need:.0f} рублей)."
+        next_level_line = f"Следующий уровень — ЗОЛОТО (осталось потратить {need:.0f} рублей)."
 
     text = (
         f"{name}, добро пожаловать в ваш личный кабинет программы лояльности 📸\n\n"
