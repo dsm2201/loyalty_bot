@@ -1,12 +1,15 @@
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
 )
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -326,30 +329,49 @@ def get_cabinet_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(keyboard)
 
+def get_client_reply_keyboard() -> ReplyKeyboardMarkup:
+    buttons = [[KeyboardButton("Личный кабинет")]]
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+
 # === HANDLERS ===
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Приветствие клиента."""
     user = update.effective_user
 
-    keyboard = [
+    inline_kb = [
         [InlineKeyboardButton("🔐 Открыть личный кабинет", callback_data="cabinet_open")]
     ]
 
     text = (
-        "Привет! Я бот программы лояльности Фото Химки.\n\n"
-        "Каждый Ваш визит — это не только красивые снимки и распечатки, "
-        "но и бонусы, которые возвращаются к Вам.\n\n"
+        "Привет! Я бот программы лояльности фото-ателье.\n\n"
+        "Каждый ваш визит — это не только красивые снимки и распечатки, "
+        "но и бонусы, которые возвращаются к вам.\n\n"
         "Нажмите кнопку ниже, чтобы открыть свой личный кабинет и посмотреть, "
-        "какой уровень и сколько бонусов вы уже накопили,"
-        "а так же сколько осталось потратить до следующего уровня"
+        "какой уровень и сколько бонусов вы уже накопили."
     )
 
     if update.message:
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_kb),
+        )
+        # липкая клавиатура только для не‑админов
+        if user.id not in ADMIN_IDS:
+            await update.message.reply_text(
+                "Кнопка «Личный кабинет» всегда под рукой 👇",
+                reply_markup=get_client_reply_keyboard(),
+            )
     else:
-        await update.callback_query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-
+        await update.callback_query.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_kb),
+        )
+        if user.id not in ADMIN_IDS:
+            await update.callback_query.message.reply_text(
+                "Кнопка «Личный кабинет» всегда под рукой 👇",
+                reply_markup=get_client_reply_keyboard(),
+            )
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -373,36 +395,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     # Личный кабинет клиента
-    if data == "admin_history":
-        phone = context.user_data.get("admin_client_phone")
-        if not phone:
-            await query.message.reply_text(
-                "Телефон клиента не найден в сессии. Введите телефон заново через /admin."
-            )
-            return
-
-        init_gs()
-        txs = get_transactions_for_phone(phone, limit=10)
-        if not txs:
-            await query.message.reply_text("По этому клиенту пока нет операций.")
-            return
-
-        lines = [f"История операций по {phone}:"]
-        for r in txs:
-            ts = r.get("ts", "")
-            tx_type = r.get("type", "")
-            amount = float(r.get("amount", 0) or 0)
-            bonus_delta = float(r.get("bonus_delta", 0) or 0)
-            if tx_type == "purchase":
-                line = f"{ts}: Покупка {amount:.0f}₽, начислено бонусов {bonus_delta:.0f}."
-            elif tx_type == "redeem":
-                line = f"{ts}: Списание бонусов {abs(bonus_delta):.0f}."
-            else:
-                line = f"{ts}: {tx_type} {amount:.0f}, бонусы {bonus_delta:.0f}."
-            lines.append(line)
-
-        await query.message.reply_text("\n".join(lines))
-        return
 
     if data == "cabinet_open":
         init_gs()
@@ -453,18 +445,31 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Пока нет операций по вашему бонусному счёту.")
             return
 
-        lines = ["Последние операции:"]
+        lines = ["История действий:"]
         for r in txs:
-            ts = r.get("ts", "")
+            ts_raw = r.get("ts", "")
+            try:
+                dt_utc = datetime.fromisoformat(ts_raw)
+                dt_msk = dt_utc + timedelta(hours=3)
+                ts_str = dt_msk.strftime("🗓%Y-%m-%d 🕟 %H:%M:%S")
+            except Exception:
+                ts_str = ts_raw
+
             tx_type = r.get("type", "")
             amount = float(r.get("amount", 0) or 0)
             bonus_delta = float(r.get("bonus_delta", 0) or 0)
+
             if tx_type == "purchase":
-                line = f"{ts}: Покупка {amount:.0f}₽, начислено бонусов {bonus_delta:.0f}."
+                line = (
+                    f"{ts_str}: Покупка на {amount:.0f}₽, "
+                    f"начислено бонусов: {bonus_delta:.0f}."
+                )
             elif tx_type == "redeem":
-                line = f"{ts}: Списание бонусов {abs(bonus_delta):.0f}."
+                line = f"{ts_str}: Списание бонусов: {abs(bonus_delta):.0f}."
+            elif tx_type == "promo_review":
+                line = f"{ts_str}: Отзыв, бонусы: {bonus_delta:.0f}."
             else:
-                line = f"{ts}: {tx_type} {amount:.0f}, бонусы {bonus_delta:.0f}."
+                line = f"{ts_str}: {tx_type}, сумма {amount:.0f}, бонусы {bonus_delta:.0f}."
             lines.append(line)
 
         await query.message.reply_text("\n".join(lines))
@@ -488,6 +493,51 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "3) Пришли скрин сюда в ответ на это сообщение.\n\n"
             "Как только отзыв появится на Яндексе, мы проверим и начислим тебе 100 бонусов."
         )
+        return
+
+    # Админ: история по клиенту
+    if data == "admin_history":
+        phone = context.user_data.get("admin_client_phone")
+        if not phone:
+            await query.message.reply_text(
+                "Телефон клиента не найден в сессии. Отправь /admin и введи телефон заново."
+            )
+            return
+
+        init_gs()
+        txs = get_transactions_for_phone(phone, limit=20)
+        if not txs:
+            await query.message.reply_text("По этому клиенту пока нет операций.")
+            return
+
+        lines = [f"История действий по {phone}:"]
+        for r in txs:
+            ts_raw = r.get("ts", "")
+            try:
+                dt_utc = datetime.fromisoformat(ts_raw)
+                dt_msk = dt_utc + timedelta(hours=3)
+                ts_str = dt_msk.strftime("🗓%Y-%m-%d 🕟 %H:%M:%S")
+            except Exception:
+                ts_str = ts_raw
+
+            tx_type = r.get("type", "")
+            amount = float(r.get("amount", 0) or 0)
+            bonus_delta = float(r.get("bonus_delta", 0) or 0)
+
+            if tx_type == "purchase":
+                line = (
+                    f"{ts_str}: Покупка на {amount:.0f}₽, "
+                    f"начислено бонусов: {bonus_delta:.0f}."
+                )
+            elif tx_type == "redeem":
+                line = f"{ts_str}: Списание бонусов: {abs(bonus_delta):.0f}."
+            elif tx_type == "promo_review":
+                line = f"{ts_str}: Отзыв, бонусы: {bonus_delta:.0f}."
+            else:
+                line = f"{ts_str}: {tx_type}, сумма {amount:.0f}, бонусы {bonus_delta:.0f}."
+            lines.append(line)
+
+        await query.message.reply_text("\n".join(lines))
         return
 
     # Админские кнопки
@@ -612,6 +662,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений (телефон, суммы и т.д.)."""
     text = (update.message.text or "").strip()
     user = update.effective_user
+
+    # Быстрая кнопка с reply‑клавиатуры
+    if text == "Личный кабинет":
+        await start(update, context)
+        return
 
     # 1) Клиент вводит телефон для личного кабинета
     if context.user_data.get("awaiting_phone_for_cabinet"):
