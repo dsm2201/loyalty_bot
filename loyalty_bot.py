@@ -323,7 +323,7 @@ def format_client_cabinet(client, phone: str) -> str:
 def get_cabinet_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton("📜 История", callback_data="history")],
-        [InlineKeyboardButton("📸 Перейти в канал", url="https://t.me/your_channel_here")],
+        [InlineKeyboardButton("📸 Перейти в канал", url="https://t.me/photo_himki_life")],
         [InlineKeyboardButton("📂 Отправить файл", callback_data="send_file")],
         [InlineKeyboardButton("💬 Оставить отзыв — +100 бонусов", callback_data="leave_review")],
     ]
@@ -358,7 +358,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         # липкая клавиатура только для не‑админов
         await update.message.reply_text(
-            "Кнопка «Личный кабинет» всегда под рукой 👇",
+            "Кнопка «Личный кабинет» всегда под рукой!",
             reply_markup=get_client_reply_keyboard(),
         )
     else:
@@ -367,7 +367,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(inline_kb),
         )
         await update.callback_query.message.reply_text(
-             "Кнопка «Личный кабинет» всегда под рукой 👇",
+             "Кнопка «Личный кабинет» всегда под рукой!",
             reply_markup=get_client_reply_keyboard(),
         )
 
