@@ -114,6 +114,22 @@ def get_phone_by_user_id(user_id: int) -> str | None:
         print(f"get_phone_by_user_id error: {e}")
     return None
 
+def get_user_ids_by_phone(phone: str) -> list[int]:
+    """Ищет всех Telegram user_id, привязанных к данному телефону."""
+    if TG_LINKS_WS is None:
+        return []
+    try:
+        records = TG_LINKS_WS.get_all_records()
+        res = []
+        for r in records:
+            if str(r.get("phone", "")).strip() == phone.strip():
+                uid_str = str(r.get("user_id", "")).strip()
+                if uid_str.isdigit():
+                    res.append(int(uid_str))
+        return res
+    except Exception as e:
+        print(f"get_user_ids_by_phone error: {e}")
+        return []
 
 def link_user_to_phone(user, phone: str):
     """Создаёт или обновляет связь user_id <-> phone в листе tg_links."""
@@ -220,6 +236,20 @@ def log_transaction(phone: str, tx_type: str, amount: float, bonus_delta: float,
         [phone, tx_type, amount, bonus_delta, ts, comment],
         value_input_option="RAW",
     )
+
+def get_transactions_for_phone(phone: str, limit: int = 10) -> list[dict]:
+    """Возвращает последние операции по телефону из листа transactions."""
+    if TX_WS is None:
+        return []
+    records = TX_WS.get_all_records()
+    # фильтруем по телефону
+    filtered = [r for r in records if str(r.get("phone", "")).strip() == phone.strip()]
+    # сортируем по времени, если есть поле ts
+    try:
+        filtered.sort(key=lambda r: r.get("ts", ""), reverse=True)
+    except Exception:
+        pass
+    return filtered[:limit]
 
 
 # === ЛОГИКА УРОВНЕЙ И БОНУСОВ ===
@@ -368,12 +398,52 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        if data == "history":
+        phone = context.user_data.get("client_phone")
+        if not phone:
+            await query.message.reply_text(
+                "Не найден телефон клиента в сессии. Откройте личный кабинет заново через /start."
+            )
+            return
+
+        init_gs()
+        txs = get_transactions_for_phone(phone, limit=10)
+        if not txs:
+            await query.message.reply_text("Пока нет операций по вашему бонусному счёту.")
+            return
+
+        lines = ["Последние операции:"]
+        for r in txs:
+            ts = r.get("ts", "")
+            tx_type = r.get("type", "")
+            amount = float(r.get("amount", 0) or 0)
+            bonus_delta = float(r.get("bonus_delta", 0) or 0)
+            if tx_type == "purchase":
+                line = f"{ts}: Покупка {amount:.0f}₽, начислено бонусов {bonus_delta:.0f}."
+            elif tx_type == "redeem":
+                line = f"{ts}: Списание бонусов {abs(bonus_delta):.0f}."
+            else:
+                line = f"{ts}: {tx_type} {amount:.0f}, бонусы {bonus_delta:.0f}."
+            lines.append(line)
+
+        await query.message.reply_text("\n".join(lines))
+        return
+
+
         # 2) Если привязки нет — просим телефон (тоже новым сообщением)
         context.user_data["awaiting_phone_for_cabinet"] = True
         await query.message.reply_text(
             "Введите ваш номер телефона в формате 89XXXXXXXXX\n\n"
             "Мы найдём ваш профиль в системе лояльности или создадим новый, "
             "чтобы вы могли наслаждаться накоплением бонусов."
+        )
+        return
+        
+    if data == "send_file":
+        context.user_data["awaiting_file_for_admin"] = True
+        await query.message.reply_text(
+            "Пришлите сюда файл или фото, которое вы хотите передать мастеру. "
+            "Мы перешлём его администратору, не показывая ваш личный аккаунт."
         )
         return
 
@@ -394,6 +464,30 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Например: 100 или 250.50"
         )
         return
+
+async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not context.user_data.get("awaiting_file_for_admin"):
+        # файл не по запросу — игнорируем или отвечаем чем‑нибудь нейтральным
+        return
+
+    context.user_data["awaiting_file_for_admin"] = False
+
+    # Формируем подпись для админа
+    caption = f"Файл от клиента @{user.username or user.id} из бота лояльности."
+
+    # Пересылаем сообщение целиком (проще всего)
+    for admin_id in ADMIN_IDS:
+        try:
+            await update.effective_message.forward(chat_id=admin_id)
+            # при желании можно отправить отдельным сообщением caption
+            await context.bot.send_message(chat_id=admin_id, text=caption)
+        except Exception as e:
+            print(f"forward file error to {admin_id}: {e}")
+
+    await update.message.reply_text(
+        "Файл отправлен администратору. Мы свяжемся с вами при необходимости."
+    )
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -514,6 +608,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Текущий уровень клиента: {level}."
             )
 
+                    # Уведомляем клиента в личном кабинете, если он привязан
+            user_ids = get_user_ids_by_phone(phone)
+            if user_ids:
+                # красивое время
+                now = datetime.now()
+                ts_str = now.strftime("%d.%m в %H:%M")
+                notify_text = (
+                    f"{ts_str} совершена покупка в Фото Химки на сумму {amount:.0f}₽.\n"
+                    f"Начислено бонусов: {bonus_delta:.0f}.\n"
+                    f"Текущий баланс: {new_bonus_balance:.0f} бонусов."
+                )
+                for uid in user_ids:
+                    try:
+                        await context.bot.send_message(chat_id=uid, text=notify_text)
+                    except Exception as e:
+                        print(f"notify purchase error to {uid}: {e}")
+
+
             context.user_data["admin_step"] = "menu"
             return
 
@@ -559,6 +671,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Новый баланс бонусов: {new_balance:.0f}."
             )
 
+                    # Уведомляем клиента о списании бонусов
+            user_ids = get_user_ids_by_phone(phone)
+            if user_ids:
+                now = datetime.now()
+                ts_str = now.strftime("%d.%m в %H:%M")
+                notify_text = (
+                    f"{ts_str} в Фото Химки были списаны бонусы: {redeem:.0f}.\n"
+                    f"Текущий баланс: {new_balance:.0f} бонусов."
+                )
+                for uid in user_ids:
+                    try:
+                        await context.bot.send_message(chat_id=uid, text=notify_text)
+                    except Exception as e:
+                        print(f"notify redeem error to {uid}: {e}")
+
+
             context.user_data["admin_step"] = "menu"
             return
 
@@ -586,6 +714,10 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin))
     application.add_handler(CallbackQueryHandler(button))
+    application.add_handler(MessageHandler(
+        (filters.PHOTO | filters.DOCUMENT | filters.VIDEO | filters.AUDIO) & ~filters.COMMAND,
+        handle_file,
+    ))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     # URL, по которому Telegram будет стучаться
