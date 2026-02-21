@@ -714,7 +714,7 @@ def main():
     application.add_handler(CommandHandler("admin", admin))
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(
-        (filters.PHOTO | filters.DOCUMENT | filters.VIDEO | filters.AUDIO) & ~filters.COMMAND,
+        (filters.PHOTO | filters.Document.ALL | filters.VIDEO) & ~filters.COMMAND,
         handle_file,
     ))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
