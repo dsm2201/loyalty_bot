@@ -357,21 +357,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(inline_kb),
         )
         # липкая клавиатура только для не‑админов
-        if user.id not in ADMIN_IDS:
-            await update.message.reply_text(
-                "Кнопка «Личный кабинет» всегда под рукой 👇",
-                reply_markup=get_client_reply_keyboard(),
-            )
+        await update.message.reply_text(
+            "Кнопка «Личный кабинет» всегда под рукой 👇",
+            reply_markup=get_client_reply_keyboard(),
+        )
     else:
         await update.callback_query.message.reply_text(
             text,
             reply_markup=InlineKeyboardMarkup(inline_kb),
         )
-        if user.id not in ADMIN_IDS:
-            await update.callback_query.message.reply_text(
-                "Кнопка «Личный кабинет» всегда под рукой 👇",
-                reply_markup=get_client_reply_keyboard(),
-            )
+        await update.callback_query.message.reply_text(
+             "Кнопка «Личный кабинет» всегда под рукой 👇",
+            reply_markup=get_client_reply_keyboard(),
+        )
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
