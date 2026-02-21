@@ -319,7 +319,7 @@ def format_client_cabinet(client, phone: str) -> str:
 def get_cabinet_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton("📜 История", callback_data="history")],
-        [InlineKeyboardButton("📸 Перейти в канал", url="https://t.me/your_channel_here")],
+        [InlineKeyboardButton("📸 Перейти в канал", url="https://t.me/photo_himki_life")],
         [InlineKeyboardButton("📂 Отправить файл", callback_data="send_file")],
     ]
     return InlineKeyboardMarkup(keyboard)
