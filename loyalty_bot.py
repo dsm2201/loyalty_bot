@@ -372,6 +372,37 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     # Личный кабинет клиента
+    if data == "admin_history":
+        phone = context.user_data.get("admin_client_phone")
+        if not phone:
+            await query.message.reply_text(
+                "Телефон клиента не найден в сессии. Введите телефон заново через /admin."
+            )
+            return
+
+        init_gs()
+        txs = get_transactions_for_phone(phone, limit=10)
+        if not txs:
+            await query.message.reply_text("По этому клиенту пока нет операций.")
+            return
+
+        lines = [f"История операций по {phone}:"]
+        for r in txs:
+            ts = r.get("ts", "")
+            tx_type = r.get("type", "")
+            amount = float(r.get("amount", 0) or 0)
+            bonus_delta = float(r.get("bonus_delta", 0) or 0)
+            if tx_type == "purchase":
+                line = f"{ts}: Покупка {amount:.0f}₽, начислено бонусов {bonus_delta:.0f}."
+            elif tx_type == "redeem":
+                line = f"{ts}: Списание бонусов {abs(bonus_delta):.0f}."
+            else:
+                line = f"{ts}: {tx_type} {amount:.0f}, бонусы {bonus_delta:.0f}."
+            lines.append(line)
+
+        await query.message.reply_text("\n".join(lines))
+        return
+
     if data == "cabinet_open":
         init_gs()
 
@@ -547,7 +578,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [
                 [InlineKeyboardButton("➕ Покупка", callback_data="admin_purchase")],
                 [InlineKeyboardButton("➖ Списать бонусы", callback_data="admin_redeem")],
+                [InlineKeyboardButton("📜 История", callback_data="admin_history")],
             ]
+
 
             await update.message.reply_text(
                 f"Профиль клиента:\n\n"
