@@ -391,14 +391,23 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             context.user_data["client_phone"] = linked_phone
             cabinet_text = format_client_cabinet(client, linked_phone)
-            # НОВОЕ: отправляем НОВОЕ сообщение + кнопки
             await query.message.reply_text(
                 cabinet_text,
                 reply_markup=get_cabinet_keyboard(),
             )
             return
 
-        if data == "history":
+        # 2) Если привязки нет — просим телефон
+        context.user_data["awaiting_phone_for_cabinet"] = True
+        await query.message.reply_text(
+            "Введите ваш номер телефона в формате 89XXXXXXXXX\n\n"
+            "Мы найдём ваш профиль в системе лояльности или создадим новый, "
+            "чтобы вы могли наслаждаться накоплением бонусов."
+        )
+        return
+
+    # История операций
+    if data == "history":
         phone = context.user_data.get("client_phone")
         if not phone:
             await query.message.reply_text(
@@ -429,16 +438,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("\n".join(lines))
         return
 
-
-        # 2) Если привязки нет — просим телефон (тоже новым сообщением)
-        context.user_data["awaiting_phone_for_cabinet"] = True
-        await query.message.reply_text(
-            "Введите ваш номер телефона в формате 89XXXXXXXXX\n\n"
-            "Мы найдём ваш профиль в системе лояльности или создадим новый, "
-            "чтобы вы могли наслаждаться накоплением бонусов."
-        )
-        return
-        
+    # Отправка файла администратору
     if data == "send_file":
         context.user_data["awaiting_file_for_admin"] = True
         await query.message.reply_text(
@@ -446,7 +446,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Мы перешлём его администратору, не показывая ваш личный аккаунт."
         )
         return
-
 
     # Админские кнопки
     if data == "admin_purchase":
@@ -456,7 +455,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Например: 450 или 450.50"
         )
         return
-        
+
     if data == "admin_redeem":
         context.user_data["admin_step"] = "await_redeem_sum"
         await query.edit_message_text(
