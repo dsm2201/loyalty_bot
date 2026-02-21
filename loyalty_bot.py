@@ -29,6 +29,7 @@ GSSHEETID = os.getenv("GSSHEETID")          # ID таблицы в Google Sheets
 
 PORT = int(os.getenv("PORT", "10000"))
 BASE_URL = os.getenv("BASE_URL")
+YANDEX_REVIEW_URL = "https://yandex.ru/maps/org/fotokhimki/1218432835/reviews/?ll=37.404888%2C55.902289&z=14"
 
 # Ожидаемые листы:
 # Sheet "clients": phone | name | created_at | turnover | bonus_balance | level
@@ -319,11 +320,11 @@ def format_client_cabinet(client, phone: str) -> str:
 def get_cabinet_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton("📜 История", callback_data="history")],
-        [InlineKeyboardButton("📸 Перейти в канал", url="https://t.me/photo_himki_life")],
+        [InlineKeyboardButton("📸 Перейти в канал", url="https://t.me/your_channel_here")],
         [InlineKeyboardButton("📂 Отправить файл", callback_data="send_file")],
+        [InlineKeyboardButton("💬 Оставить отзыв — +100 бонусов", callback_data="leave_review")],
     ]
     return InlineKeyboardMarkup(keyboard)
-
 
 # === HANDLERS ===
 
@@ -477,8 +478,68 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Мы перешлём его администратору, не показывая ваш личный аккаунт."
         )
         return
+        
+    if data == "leave_review":
+        context.user_data["awaiting_review_screenshot"] = True
+        await query.message.reply_text(
+            "Хочешь +100 бонусов? 🔥\n\n"
+            f"1) Перейди по ссылке и оставь отзыв о «Фото Химки» на Яндекс.Картах:\n{YANDEX_REVIEW_URL}\n\n"
+            "2) Сделай скриншот своего отзыва.\n"
+            "3) Пришли скрин сюда в ответ на это сообщение.\n\n"
+            "Как только отзыв появится на Яндексе, мы проверим и начислим тебе 100 бонусов."
+        )
+        return
 
     # Админские кнопки
+    if data == "admin_bonus_review":
+        phone = context.user_data.get("admin_client_phone")
+        if not phone:
+            await query.message.reply_text(
+                "❗ Телефон клиента не найден в сессии. Отправь /admin и введи телефон заново."
+            )
+            return
+
+        init_gs()
+        client = find_client_by_phone(phone)
+        if not client:
+            await query.message.reply_text("Клиент не найден (возможно, ошибка номера).")
+            context.user_data["admin_step"] = "await_phone"
+            return
+
+        bonus_balance = float(client.get("bonus_balance", 0) or 0)
+        bonus_delta = 100.0
+        new_balance = bonus_balance + bonus_delta
+
+        client["bonus_balance"] = new_balance
+        update_client_row(client)
+
+        # логируем как отдельный тип операции
+        log_transaction(phone, "promo_review", 0, bonus_delta, "Бонус за отзыв на Яндекс.Картах")
+
+        await query.message.reply_text(
+            f"🎁 Начислено +{bonus_delta:.0f} бонусов за отзыв.\n"
+            f"Новый баланс бонусов: {new_balance:.0f}."
+        )
+
+        # Уведомление клиенту, если привязан
+        user_ids = get_user_ids_by_phone(phone)
+        if user_ids:
+            now = datetime.now()
+            ts_str = now.strftime("%d.%m в %H:%M")
+            notify_text = (
+                f"{ts_str} вам начислено +{bonus_delta:.0f} бонусов в Фото Химки за отзыв.\n"
+                f"Текущий баланс: {new_balance:.0f} бонусов."
+            )
+            for uid in user_ids:
+                try:
+                    await context.bot.send_message(chat_id=uid, text=notify_text)
+                except Exception as e:
+                    print(f"notify promo_review error to {uid}: {e}")
+
+        context.user_data["admin_step"] = "menu"
+        return
+
+    
     if data == "admin_purchase":
         context.user_data["admin_step"] = "await_purchase_sum"
         await query.edit_message_text(
@@ -497,28 +558,55 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not context.user_data.get("awaiting_file_for_admin"):
-        # файл не по запросу — игнорируем или отвечаем чем‑нибудь нейтральным
+
+    # Если ждём именно скрин отзыва
+    if context.user_data.get("awaiting_review_screenshot"):
+        context.user_data["awaiting_review_screenshot"] = False
+
+        phone = context.user_data.get("client_phone", "неизвестен")
+        caption_admin = (
+            "Скрин отзыва от клиента.\n"
+            f"Телефон: {phone}\n"
+            f"Telegram: @{user.username or '—'} (id {user.id})"
+        )
+
+        # Пересылаем сообщение (фото/документ) админу
+        for admin_id in ADMIN_IDS:
+            try:
+                forwarded = await update.effective_message.forward(chat_id=admin_id)
+                # можно дополнительно отправить текстом подпись
+                await context.bot.send_message(chat_id=admin_id, text=caption_admin)
+            except Exception as e:
+                print(f"forward review screenshot error to {admin_id}: {e}")
+
+        await update.message.reply_text(
+            "Спасибо за отзыв! 🙌\n"
+            "Как только он появится на Яндекс.Картах, мы это проверим и начислим +100 бонусов на твой счёт."
+        )
         return
 
-    context.user_data["awaiting_file_for_admin"] = False
+    # Если ждём обычный файл для мастера
+    if context.user_data.get("awaiting_file_for_admin"):
+        context.user_data["awaiting_file_for_admin"] = False
 
-    # Формируем подпись для админа
-    caption = f"Файл от клиента @{user.username or user.id} из бота лояльности."
+        caption = f"Файл от клиента @{user.username or user.id} из бота лояльности."
 
-    # Пересылаем сообщение целиком (проще всего)
-    for admin_id in ADMIN_IDS:
-        try:
-            await update.effective_message.forward(chat_id=admin_id)
-            # при желании можно отправить отдельным сообщением caption
-            await context.bot.send_message(chat_id=admin_id, text=caption)
-        except Exception as e:
-            print(f"forward file error to {admin_id}: {e}")
+        for admin_id in ADMIN_IDS:
+            try:
+                await update.effective_message.forward(chat_id=admin_id)
+                await context.bot.send_message(chat_id=admin_id, text=caption)
+            except Exception as e:
+                print(f"forward file error to {admin_id}: {e}")
 
+        await update.message.reply_text(
+            "Файл отправлен администратору. Мы свяжемся с вами при необходимости."
+        )
+        return
+
+    # Если файл пришёл вне ожидаемого сценария — можно либо игнорировать, либо что-то ответить
     await update.message.reply_text(
-        "Файл отправлен администратору. Мы свяжемся с вами при необходимости."
+        "Если вы хотите отправить файл мастеру, нажмите кнопку «Отправить файл» в личном кабинете."
     )
-
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений (телефон, суммы и т.д.)."""
@@ -578,9 +666,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [
                 [InlineKeyboardButton("➕ Покупка", callback_data="admin_purchase")],
                 [InlineKeyboardButton("➖ Списать бонусы", callback_data="admin_redeem")],
-                [InlineKeyboardButton("📜 История", callback_data="admin_history")],
+                [InlineKeyboardButton("🎁 +100 бонусов (отзыв)", callback_data="admin_bonus_review")],
             ]
-
 
             await update.message.reply_text(
                 f"Профиль клиента:\n\n"
