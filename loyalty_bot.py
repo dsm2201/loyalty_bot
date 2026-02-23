@@ -340,11 +340,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     inline_kb = [
-        [InlineKeyboardButton("🔐 Открыть личный кабинет", callback_data="cabinet_open")]
-        [
-            InlineKeyboardButton("Обработка персональных данных", callback_data="pdn_info"),
-            InlineKeyboardButton("Политика конфиденциальности", callback_data="privacy_policy"),
-        ]
+        [InlineKeyboardButton("🔐 Открыть личный кабинет", callback_data="cabinet_open")],
+        [InlineKeyboardButton("Обработка персональных данных", callback_data="pdn_info")],
+        [InlineKeyboardButton("Политика конфиденциальности", callback_data="privacy_policy")],
     ]
 
     text = (
